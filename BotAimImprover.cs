@@ -16,7 +16,7 @@ namespace BotAimImprover;
 public class BotAimImprover : BasePlugin
 {
     public override string ModuleName => "BotAimImprover";
-    public override string ModuleVersion => "2.0.0";
+    public override string ModuleVersion => "2.0.1";
     public override string ModuleAuthor => "ed0ard";
     public override string ModuleDescription => "Restores intelligent aim part selection for CS2 bots.";
 
@@ -42,20 +42,21 @@ public class BotAimImprover : BasePlugin
     {
         new("HEAD",           1.00f,  0f),   // 0
         new("NECK",           0.97f,  0f),   // 1
-        new("CHEST",          0.82f,  0f),   // 2
-        new("GUT",            0.67f,  0f),   // 3
-        new("PELVIS",         0.60f,  0f),   // 4
-        new("LEFT_CHEST",     0.82f, -8f),   // 5
-        new("RIGHT_CHEST",    0.82f,  8f),   // 6
-        new("LEFT_SHOULDER",  0.92f, -8f),   // 7
-        new("RIGHT_SHOULDER", 0.92f,  8f),   // 8
-        new("LEFT_GUT",       0.67f, -7f),   // 9
-        new("RIGHT_GUT",      0.67f,  7f),   // 10
-        new("LEFT_THIGH",     0.38f, -5f),   // 11
-        new("RIGHT_THIGH",    0.38f,  5f),   // 12
-        new("LEFT_SHIN",      0.15f, -5f),   // 13
-        new("RIGHT_SHIN",     0.15f,  5f),   // 14
-        new("FEET",           5.0f,   0f, true), // 15  // absolute z + 5
+        new("JAW",            0.92f,  0f),   // 2
+        new("CHEST",          0.82f,  0f),   // 3
+        new("GUT",            0.67f,  0f),   // 4
+        new("PELVIS",         0.60f,  0f),   // 5
+        new("LEFT_CHEST",     0.82f, -8f),   // 6
+        new("RIGHT_CHEST",    0.82f,  8f),   // 7
+        new("LEFT_SHOULDER",  0.92f, -8f),   // 8
+        new("RIGHT_SHOULDER", 0.92f,  8f),   // 9
+        new("LEFT_GUT",       0.67f, -7f),   // 10
+        new("RIGHT_GUT",      0.67f,  7f),   // 11
+        new("LEFT_THIGH",     0.38f, -5f),   // 12
+        new("RIGHT_THIGH",    0.38f,  5f),   // 13
+        new("LEFT_SHIN",      0.15f, -5f),   // 14
+        new("RIGHT_SHIN",     0.15f,  5f),   // 15
+        new("FEET",           5.0f,   0f, true), // 16  // absolute z + 5
     };
     // Priority orders (values are indices into _aimPoints), highest priority first.
     // Tiers: core > centerline > side > shoulder > limb > feet.
@@ -63,22 +64,32 @@ public class BotAimImprover : BasePlugin
 
     private static readonly int[] _priorityHead =
     {
-        1, 0,            // NECK, HEAD
-        2, 3, 4,         // CHEST, GUT, PELVIS
-        5, 6, 9, 10,     // L_CHEST, R_CHEST, L_GUT, R_GUT
-        7, 8,            // L_SHOULDER, R_SHOULDER
-        11, 12, 13, 14,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
-        15               // FEET
+        0, 1, 2,         // HEAD, NECK, JAW
+        3, 4, 5,         // CHEST, GUT, PELVIS
+        6, 7, 10, 11,    // L_CHEST, R_CHEST, L_GUT, R_GUT
+        8, 9,            // L_SHOULDER, R_SHOULDER
+        12, 13, 14, 15,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
+        16               // FEET
+    };
+
+    private static readonly int[] _priorityJaw =
+    {
+        2, 1, 0,         // JAW, NECK, HEAD
+        3, 4, 5,         // CHEST, GUT, PELVIS
+        6, 7, 10, 11,    // L_CHEST, R_CHEST, L_GUT, R_GUT
+        8, 9,            // L_SHOULDER, R_SHOULDER
+        12, 13, 14, 15,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
+        16               // FEET
     };
 
     private static readonly int[] _priorityBody =
     {
-        2, 3, 4,         // CHEST, GUT, PELVIS
-        5, 6, 9, 10,     // L_CHEST, R_CHEST, L_GUT, R_GUT
-        7, 8,            // L_SHOULDER, R_SHOULDER
-        1, 0,            // NECK, HEAD
-        11, 12, 13, 14,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
-        15               // FEET
+        3, 4, 5,         // CHEST, GUT, PELVIS
+        6, 7, 10, 11,    // L_CHEST, R_CHEST, L_GUT, R_GUT
+        8, 9,            // L_SHOULDER, R_SHOULDER
+        2, 1, 0,         // JAW, NECK, HEAD
+        12, 13, 14, 15,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
+        16               // FEET
     };
     // ============================================================
     // Memory offsets (2026-05-19)
@@ -190,10 +201,7 @@ public class BotAimImprover : BasePlugin
                     reply = $"[BotAimImprover] Current aim mode: {_aimMode}. Valid values: head, body, mixed";
                     break;
             }
-            if (caller != null && caller.IsValid)
-                caller.PrintToConsole(reply);
-            else
-                Logger.LogInformation(reply);
+            Server.PrintToConsole(reply);
         });
     }
 
@@ -248,15 +256,18 @@ public class BotAimImprover : BasePlugin
             if (visiblePoints.Count == 0)
                 return HookResult.Continue;
 
-            // 5) Decide body-first vs head-first based on the current aim mode, then pick.
-            bool bodyFirst = _aimMode switch
+            // 5) Select the priority order based on aim mode and weapon, then pick.
+            // head: all weapons -> Head. body: all weapons -> Body.
+            // mixed: body-first weapons -> Body, others -> Jaw.
+            bool isBodyWeapon = wpn != null && _bodyFirstWeapons.Contains(wpn);
+            int[] order = _aimMode switch
             {
-                AimMode.HEAD => false,
-                AimMode.BODY => true,
-                _            => wpn != null && _bodyFirstWeapons.Contains(wpn), // MIXED
+                AimMode.HEAD => _priorityHead,
+                AimMode.BODY => _priorityBody,
+                _            => isBodyWeapon ? _priorityBody : _priorityJaw, // MIXED
             };
 
-            int chosenIdx = PickBestPoint(visiblePoints, wpn, bodyFirst);
+            int chosenIdx = PickBestPoint(visiblePoints, order);
 
             // 6) Compute chosen point world position.
             if (!TryComputePartPos(enemyPawn, chosenIdx, out float rx, out float ry, out float rz))
@@ -324,11 +335,10 @@ public class BotAimImprover : BasePlugin
 
     // Pick the highest-priority visible point. Walks the priority order and returns
     // the first index that is in the visible set. Returns -1 if none.
-    private static int PickBestPoint(List<int> visible, string? weapon, bool bodyFirst)
+    private static int PickBestPoint(List<int> visible, int[] order)
     {
         if (visible.Count == 0) return -1;
 
-        int[] order = bodyFirst ? _priorityBody : _priorityHead;
         foreach (int idx in order)
             if (visible.Contains(idx))
                 return idx;
