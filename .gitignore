@@ -1,0 +1,6 @@
+bin/
+obj/
+libs/*.dll
+.deps/
+artifacts/
+.release-staging/

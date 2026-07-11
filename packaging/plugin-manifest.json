@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "bullseye_bot",
+  "name": "BotAimImprover",
+  "kind": "mode_modifier",
+  "version": "",
+  "build_revision": "",
+  "upstream_repo": "ed0ard/CS2-Bullseye-Bot",
+  "upstream_revision": "e547a3d60c8973775e1f446c6e639a308b8733be",
+  "license": "AGPL-3.0",
+  "compatibility": {"os": ["linux"], "arch": ["x86_64"], "dotnet_target": "net10.0", "counterstrikesharp_min": 369, "counterstrikesharp_max_tested": 371, "metamod_dependency": "RayTrace v1.0.16"},
+  "required_paths": ["addons/counterstrikesharp/plugins/BotAimImprover/BotAimImprover.dll", "addons/counterstrikesharp/plugins/RayTraceImpl/RayTraceImpl.dll", "addons/metamod/RayTrace.vdf", "addons/RayTrace/bin/linuxsteamrt64/RayTrace.so"],
+  "dependencies": ["RayTrace-CSS-API v1.0.16", "RayTrace-MM linux-x64 v1.0.16"],
+  "restart_policy": "process",
+  "persistent_paths": []
+}
