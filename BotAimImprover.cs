@@ -17,7 +17,7 @@ namespace BotAimImprover;
 public class BotAimImprover : BasePlugin
 {
     public override string ModuleName => "BotAimImprover";
-    public override string ModuleVersion => "2.1.3";
+    public override string ModuleVersion => "2.1.4";
     public override string ModuleAuthor => "ed0ard & htfy96 & XBribo";
     public override string ModuleDescription => "Restores intelligent aim part selection for CS2 bots.";
 
@@ -131,6 +131,8 @@ public class BotAimImprover : BasePlugin
     private MemoryFunctionVoid<IntPtr>? _pickNewAimSpot;
     private static readonly PluginCapability<CRayTraceInterface> _rayTraceCapability =
         new("raytrace:craytraceinterface");
+    private CRayTraceInterface? _rayTrace;
+    private bool _hookInstalled;
 
     // Cache: CCSBot* -> bot's UserId .
     // Cleared on round_start and per-bot on disconnect.
@@ -164,6 +166,10 @@ public class BotAimImprover : BasePlugin
 
         try
         {
+            _rayTrace = _rayTraceCapability.Get();
+            if (_rayTrace is null)
+                throw new InvalidOperationException("RayTrace capability is unavailable. Install the pinned managed and native RayTrace dependencies and cold-start the server.");
+
             _pickNewAimSpot = new MemoryFunctionVoid<IntPtr>(_off.Sig);
 
             long pnaRuntime = _pickNewAimSpot.Handle.ToInt64();
@@ -171,6 +177,7 @@ public class BotAimImprover : BasePlugin
                 throw new InvalidOperationException("PickNewAimSpot signature resolved to zero address.");
 
             _pickNewAimSpot.Hook(OnPickNewAimSpotPost, HookMode.Post);
+            _hookInstalled = true;
 
             Logger.LogInformation("[BotAimImprover] Loaded ({Plat}). PickNewAimSpot=0x{Pna:X16}",
                 win ? "Windows" : "Linux", pnaRuntime);
@@ -206,6 +213,12 @@ public class BotAimImprover : BasePlugin
 
         AddCommand("bot_aim", "Set bot aim mode: head, body, mixed", (caller, info) =>
         {
+            if (caller is not null)
+            {
+                caller.PrintToChat("[BotAimImprover] This command is restricted to the server console.");
+                return;
+            }
+
             string arg = info.ArgCount > 1 ? info.GetArg(1).Trim().ToLowerInvariant() : "";
             string reply;
             switch (arg)
@@ -232,8 +245,18 @@ public class BotAimImprover : BasePlugin
 
     public override void Unload(bool hotReload)
     {
-        try { _pickNewAimSpot?.Unhook(OnPickNewAimSpotPost, HookMode.Post); }
+        try
+        {
+            if (_hookInstalled)
+                _pickNewAimSpot?.Unhook(OnPickNewAimSpotPost, HookMode.Post);
+        }
         catch { /* ignore */ }
+        finally
+        {
+            _hookInstalled = false;
+            _rayTrace = null;
+            _botToControllerUserId.Clear();
+        }
     }
 
     // ============================================================
@@ -413,14 +436,13 @@ public class BotAimImprover : BasePlugin
     {
         try
         {
-            var rt = _rayTraceCapability.Get();
-            if (rt == null) return true; // RayTrace not loaded -> don't block
+            if (_rayTrace is null) return false;
             var end = new Vector(tx, ty, tz);
             var opts = new TraceOptions(InteractionLayers.MASK_WORLD_ONLY);
-            rt.TraceEndShape(eye, end, null, opts, out TraceResult res);
+            _rayTrace.TraceEndShape(eye, end, null, opts, out TraceResult res);
             return res.Fraction >= 0.999f;
         }
-        catch { return true; }
+        catch { return false; }
     }
 
     // ============================================================
