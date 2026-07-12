@@ -92,41 +92,13 @@ public class BotAimImprover : BasePlugin
         12, 13, 14, 15,  // L_THIGH, R_THIGH, L_SHIN, R_SHIN
         16               // FEET
     };
-    // ============================================================
-    // Platform-specific memory layout (PickNewAimSpot hook + CCSBot fields).
-    //   Linux  libserver.so 2026-05-28
-    //   Windows server.dll  2026-07-09
-    // ============================================================
-    private readonly struct Offsets
-    {
-        public readonly int TargetSpot;   // Vector(3) m_targetSpot
-        public readonly int Enemy;        // CHandle m_enemy
-        public readonly int IsVisible;    // bool m_isEnemyVisible
-        public readonly int PBot;         // CCSPlayerPawn->m_pBot
-        public readonly string Sig;
-        public Offsets(int ts, int en, int vis, int pbot, string sig)
-        {
-            TargetSpot = ts;
-            Enemy = en;
-            IsVisible = vis;
-            PBot = pbot;
-            Sig = sig;
-        }
-    }
-
-    private static readonly Offsets LinuxOffsets = new(
-        ts: 0x597C, en: 0x59E8, vis: 0x59EC, pbot: 0x1568,
-        sig: "55 48 89 E5 41 55 41 54 53 48 89 FB 48 83 EC 58 8B 8F E8 59 00 00 83 F9 FF");
-
-    private static readonly Offsets WindowsOffsets = new(
-        ts: 0x599C,
-        en: 0x5A08,
-        vis: 0x5A0C,
-        pbot: 0x12C0,
-        sig: "48 8B C4 55 57 48 8D 68 ? 48 81 EC ? ? ? ? 48 8B F9 0F 29 70 ? 8B 89 ? ? ? ? 83 F9 FF"
-    );
-
-    private Offsets _off;
+    // PickNewAimSpot is not a schema member, so its platform signature still
+    // needs maintenance after game updates. All field access below is resolved
+    // through CounterStrikeSharp's live schema instead of hard-coded offsets.
+    private const string LinuxPickNewAimSpotSignature =
+        "55 48 89 E5 41 55 41 54 53 48 89 FB 48 83 EC 58 8B 8F E0 59 00 00 83 F9 FF";
+    private const string WindowsPickNewAimSpotSignature =
+        "48 8B C4 55 57 48 8D 68 ? 48 81 EC ? ? ? ? 48 8B F9 0F 29 70 ? 8B 89 ? ? ? ? 83 F9 FF";
 
     private MemoryFunctionVoid<IntPtr>? _pickNewAimSpot;
     private static readonly PluginCapability<CRayTraceInterface> _rayTraceCapability =
@@ -162,7 +134,6 @@ public class BotAimImprover : BasePlugin
     public override void Load(bool hotReload)
     {
         bool win = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-        _off = win ? WindowsOffsets : LinuxOffsets;
 
         try
         {
@@ -170,7 +141,13 @@ public class BotAimImprover : BasePlugin
             if (_rayTrace is null)
                 throw new InvalidOperationException("RayTrace capability is unavailable. Install the pinned managed and native RayTrace dependencies and cold-start the server.");
 
-            _pickNewAimSpot = new MemoryFunctionVoid<IntPtr>(_off.Sig);
+            int targetSpotOffset = RequireSchemaOffset("CCSBot", "m_targetSpot");
+            int enemyOffset = RequireSchemaOffset("CCSBot", "m_enemy");
+            int isEnemyVisibleOffset = RequireSchemaOffset("CCSBot", "m_isEnemyVisible");
+            int pawnBotOffset = RequireSchemaOffset("CCSPlayerPawn", "m_pBot");
+
+            string signature = win ? WindowsPickNewAimSpotSignature : LinuxPickNewAimSpotSignature;
+            _pickNewAimSpot = new MemoryFunctionVoid<IntPtr>(signature);
 
             long pnaRuntime = _pickNewAimSpot.Handle.ToInt64();
             if (pnaRuntime == 0)
@@ -179,8 +156,12 @@ public class BotAimImprover : BasePlugin
             _pickNewAimSpot.Hook(OnPickNewAimSpotPost, HookMode.Post);
             _hookInstalled = true;
 
-            Logger.LogInformation("[BotAimImprover] Loaded ({Plat}). PickNewAimSpot=0x{Pna:X16}",
-                win ? "Windows" : "Linux", pnaRuntime);
+            Logger.LogInformation(
+                "[BotAimImprover] Loaded ({Plat}). PickNewAimSpot=0x{Pna:X16}; schema offsets: " +
+                "m_targetSpot=0x{TargetSpot:X}, m_enemy=0x{Enemy:X}, " +
+                "m_isEnemyVisible=0x{IsEnemyVisible:X}, CCSPlayerPawn::m_pBot=0x{PawnBot:X}",
+                win ? "Windows" : "Linux", pnaRuntime, targetSpotOffset, enemyOffset,
+                isEnemyVisibleOffset, pawnBotOffset);
         }
         catch (Exception ex)
         {
@@ -243,6 +224,14 @@ public class BotAimImprover : BasePlugin
         });
     }
 
+    private static int RequireSchemaOffset(string className, string memberName)
+    {
+        int offset = Schema.GetSchemaOffset(className, memberName);
+        if (offset <= 0)
+            throw new InvalidOperationException($"Schema member {className}::{memberName} is unavailable.");
+        return offset;
+    }
+
     public override void Unload(bool hotReload)
     {
         try
@@ -274,21 +263,15 @@ public class BotAimImprover : BasePlugin
             if (pCCSBot == IntPtr.Zero)
                 return HookResult.Continue;
 
+            var bot = new CCSBot(pCCSBot);
+
             // 1) Gate: enemy must be generally visible before we
             //    spend any raytraces. Otherwise the native used last-known position.
-            if (ReadByte(pCCSBot + _off.IsVisible) == 0)
+            if (!bot.IsEnemyVisible)
                 return HookResult.Continue;
 
-            // 2) Resolve enemy pawn from m_enemy CHandle.
-            int enemyHandleRaw = ReadInt32(pCCSBot + _off.Enemy);
-            if (enemyHandleRaw == -1)
-                return HookResult.Continue;
-
-            int enemyIdx = enemyHandleRaw & 0x7FFF;
-            if (enemyIdx <= 0 || enemyIdx >= 4096)
-                return HookResult.Continue;
-
-            CCSPlayerPawn? enemyPawn = Utilities.GetEntityFromIndex<CCSPlayerPawn>(enemyIdx);
+            // 2) Resolve enemy pawn from m_enemy CHandle through the live schema.
+            CCSPlayerPawn? enemyPawn = bot.Enemy.Value;
             if (enemyPawn == null || !enemyPawn.IsValid || enemyPawn.Handle == IntPtr.Zero)
                 return HookResult.Continue;
 
@@ -327,12 +310,11 @@ public class BotAimImprover : BasePlugin
             if (chosenIdx < 0)
                 return HookResult.Continue;
 
-            // 6) Overwrite only m_targetSpot.xyz.
-            unsafe
-            {
-                float* dst = (float*)(pCCSBot + _off.TargetSpot).ToPointer();
-                dst[0] = rx; dst[1] = ry; dst[2] = rz;
-            }
+            // 6) Overwrite only m_targetSpot.xyz through the live schema.
+            Vector targetSpot = bot.TargetSpot;
+            targetSpot.X = rx;
+            targetSpot.Y = ry;
+            targetSpot.Z = rz;
 
             // One-time confirmation that the override path actually runs end-to-end.
             if (!_firstOverrideLogged)
@@ -374,11 +356,11 @@ public class BotAimImprover : BasePlugin
             if (pawn == null || !pawn.IsValid || pawn.Handle == IntPtr.Zero)
                 continue;
 
-            IntPtr pBotPtr;
-            try { pBotPtr = ReadIntPtr(pawn.Handle + _off.PBot); }
+            CCSBot? pawnBot;
+            try { pawnBot = pawn.Bot; }
             catch { continue; }
 
-            if (pBotPtr == pCCSBot)
+            if (pawnBot?.Handle == pCCSBot)
             {
                 _botToControllerUserId[pCCSBot] = ctrl.UserId.Value;
                 return ctrl;
@@ -445,10 +427,4 @@ public class BotAimImprover : BasePlugin
         catch { return false; }
     }
 
-    // ============================================================
-    // Raw memory readers
-    // ============================================================
-    private static unsafe byte ReadByte(IntPtr addr) => *(byte*)addr.ToPointer();
-    private static unsafe int ReadInt32(IntPtr addr) => *(int*)addr.ToPointer();
-    private static unsafe IntPtr ReadIntPtr(IntPtr addr) => *(IntPtr*)addr.ToPointer();
 }
