@@ -34,6 +34,6 @@ jobs:
           git checkout -B "${branch}"
           git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
           git push --force origin HEAD:"${branch}"
-          if [[ -z "$(gh pr list --head "${branch}" --state open --json number --jq '.[0].number')" ]]; then
-            gh pr create --base main --head "${branch}" --title 'Sync upstream changes' --body 'Automated upstream merge for review. This PR is never merged or released automatically.'
+          if [[ -z "$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --state open --json number --jq '.[0].number')" ]]; then
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${branch}" --title 'Sync upstream changes' --body 'Automated upstream merge for review. This PR is never merged or released automatically.'
           fi
