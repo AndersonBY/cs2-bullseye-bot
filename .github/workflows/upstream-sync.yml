@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -37,3 +38,4 @@ jobs:
           if [[ -z "$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${branch}" --state open --json number --jq '.[0].number')" ]]; then
             gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${branch}" --title 'Sync upstream changes' --body 'Automated upstream merge for review. This PR is never merged or released automatically.'
           fi
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
